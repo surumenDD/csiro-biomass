@@ -1,0 +1,19 @@
+services:
+  dev:
+    build: .
+    image: rtx5070ti-pytorch-cu128:latest
+    working_dir: /work
+    volumes:
+      - .:/work
+    tty: true
+    stdin_open: true
+    # 共有メモリを増やす（Dataloader系の事故が減る）
+    shm_size: "8gb"
+    # GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
