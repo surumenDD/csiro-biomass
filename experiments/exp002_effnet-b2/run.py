@@ -31,6 +31,7 @@ LOGGER = None
 # ----Config----
 @dataclass
 class ExpConfig:
+    debug: bool = True
     accelerator: str = "auto"
     devices: str = "auto"
     log_every_n_steps: int = 20
@@ -72,7 +73,59 @@ cs.store(name="default", group="exp", node=ExpConfig)
 # ----実験用コード----
 def log_config(cfg: Config) -> None:
     LOGGER.info("Config: %s", cfg)
-    
+
+def set_seed(seed: int) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic =True
+    torch.backends.cudnn.benchmark = False
+
+def resolve_input_dir(cfg_input_dir: str) -> Path:
+    # Primary: from config
+    cfg_dir = Path(cfg_input_dir)
+    if cfg_dir.exists():
+        return cfg_dir
+    # Secondary: local workspace input
+    workspace_dir = Path(__file__).resolve().parents[2] / "input"
+    if workspace_dir.exists():
+        return workspace_dir
+    # Fallback (e.g. Kaggle): current working directory input
+    cwd_input_dir = Path.cwd() / "input"
+    return cwd_input_dir 
+
+
+class RegressionDataset(Dataset):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        input_dir: Path,
+        transform: Optional[transforms.Compose] = None,
+        has_targets: bool = True,
+    ) -> None:
+        self.df = df.reset_index(drop=True)
+        self.input_dir = input_dir
+        self.transform = transform
+        self.has_targets = has_targets
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int):
+        row = self.df.iloc[idx]
+        img_path = self.input_dir / row["image_path"]
+        image = Image.open(img_path).convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        
+        if not self.has_targets:
+            return image
+
+        targets = torch.tensor(
+            [row[Dry_Green_g], row["Dry_Clover_g"], row["Dry_Dead_g"]],
+            dtype=torch.float32,
+        )
+        return image, targets
 
 
 @hydra.main(version_base=None, config_path=".", config_name="config")
@@ -88,6 +141,12 @@ def main(cfg: Config) -> None:
     LOGGER = get_logger(__name__, output_dir)
     LOGGER.info("Start")
     log_config(cfg)
+
+    # seed
+    set_seed(cfg.exp.seed)
+
+    # paths
+    input_dir = resolve_input_dir(cfg.env.input_dir)
 
 if __name__ == "__main__":
     main()
