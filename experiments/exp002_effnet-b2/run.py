@@ -203,7 +203,22 @@ def weighted_r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, np
     weighted_r2 = np.sum(r2_scores * weights) / np.sum(weights)
     return weighted_r2, r2_scores   
 
-
+def calc_metric(outputs3: np.ndarray, targets3: np.ndarray) -> Tuple[float, np.ndarray]:
+    """
+    3ターゲットを5ターゲットに復元（コンペの評価）
+    """
+    y_true = np.column_stack([
+        targets3,
+        targets3[:, :2].sum(axis=1), # GDM_g
+        targets3.sum(axis=1), # Dry_Total_g
+    ])
+    y_pred = np.column_stack([
+        outputs3,
+        outputs3[:, :2].sum(axis=1),
+        outputs3.sum(axis=1),
+    ])
+    return weighted_r2_score(y_true, y_pred)
+    
 
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: Config) -> None:
