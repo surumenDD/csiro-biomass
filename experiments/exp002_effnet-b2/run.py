@@ -184,6 +184,25 @@ def make_wide_train_df(train_csv: Path) -> pd.DataFrame:
             wide[c] = wide[c].astype(np.float32)
     return wide
 
+###ここからしたコミットしていない
+
+def weighted_r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, np.ndarray]:
+    """
+    y_true, y_pred: (N, 5) = Green/Clover/Dead/GDM/Total
+    """
+    weights = np.array([0.1, 0.1, 0.1, 0.2, 0.5], dtype=np.float64)
+    r2_scores = [] # 各ターゲットのR^2を入れるリスト
+    for i in range(5):
+        y_t = y_true[:, i]
+        y_p = y_pred[:, i]
+        ss_res = np.sum((y_t - y_p) ** 2)
+        ss_tot = np.sum((y_t - np.mean(y_t)) ** 2)
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        r2_scores.append(r2)
+    r2_scores = np.array(r2_scores)
+    weighted_r2 = np.sum(r2_scores * weights) / np.sum(weights)
+    return weighted_r2, r2_scores   
+
 
 
 @hydra.main(version_base=None, config_path=".", config_name="config")
