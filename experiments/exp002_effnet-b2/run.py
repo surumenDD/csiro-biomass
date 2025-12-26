@@ -156,6 +156,36 @@ def create_transforms(image_size: int, aug: bool) -> Tuple[transforms.Compose, t
     return train_tfms, valid_tfms
     
 
+
+def make_wide_train_df(train_csv: Path) -> pd.DataFrame:
+    """
+    train.csv は (sample_id, target_name, target, image_path, ...) のロング形式。
+    画像1枚に対して 5ターゲットが縦持ちなので、画像単位で横持ち(wide)に変換する。
+    """
+    train_df = pd.read_csv(train_csv)
+    train_df[["sample_id_prefix", "sample_id_suffix"]] = train_df["sample_id"].str.split("__", expand=True)
+
+    cols = [
+        "sample_id_prefix",
+        "image_path",
+        "Sampling_Date",
+        "State",
+        "Species",
+        "Pre_GSHH_NDVI",
+        "Height_Ave_cm",
+    ]
+    wide = train_df.groupby(cols).apply(lambda d: d.set_index("target_name")["target"])
+    wide = wide.reset_index()
+    wide.columns.name = None
+
+    # 念のため型
+    for c in ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g"]:
+        if c in wide.columns:
+            wide[c] = wide[c].astype(np.float32)
+    return wide
+
+
+
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: Config) -> None:
     print(cfg)
