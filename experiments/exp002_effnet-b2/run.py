@@ -128,6 +128,34 @@ class RegressionDataset(Dataset):
         return image, targets
 
 
+def create_transforms(image_size: int, aug: bool) -> Tuple[transforms.Compose, transforms.Compose]:
+    base = [
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+    if not aug:
+        return transforms.Compose(base), transforms.Compose(base)
+    
+    train_tfms = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.ColorJitter(
+                brightness=0.1,
+                contrast=0.1,
+                saturation=0.1,
+                hue=0.05,
+            ),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    valid_tfms = transforms.Compose(base)
+    return train_tfms, valid_tfms
+    
+
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: Config) -> None:
     print(cfg)
