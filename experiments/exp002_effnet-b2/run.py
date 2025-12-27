@@ -114,13 +114,12 @@ class RegressionDataset(Dataset):
     def __getitem__(self, idx: int):
         row = self.df.iloc[idx]
         img_path = self.input_dir / row["image_path"]
-        image = Image.open(img_path).convert("RGB")
+        with Image.open(img_path) as img:
+            image = img.convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
-        
         if not self.has_targets:
             return image
-
         targets = torch.tensor(
             [row[Dry_Green_g], row["Dry_Clover_g"], row["Dry_Dead_g"]],
             dtype=torch.float32,
@@ -229,6 +228,103 @@ def create_model(model_name: str, num_classes: int= 3) -> nn.Module:
     return model
     
 
+
+    
+
+class RegressionModule(pl.LightningModule):
+    def __init__(
+        self,
+        model_name: str,
+        learning_rate: float,
+        weight_decay: float,
+        scheduler_name: str = "cosine",
+        t_max: int = 100,
+        min_lr: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.model = create_model(model_name=model_name, num_classes=3)
+        self.loss_fn = nn.SmoothL1Loss()
+
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+    def training_step(self, batch, batch_idx: int) -> torch.Tensor:
+        images, targets = batch
+        preds = self(images)
+        loss = self.loss_fn(preds, targets)
+        targets_f = targets.to(torch.float32)
+        preds_f = preds.to(torch.float32)
+        # 参考値としてrmse
+        preds_clamped = torch.clamp(preds_f, min=0.0)
+        rmse = torch.sqrt(torch.mean((preds_clamped - targets_f) ** 2))
+        # log
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=False)
+        self.log("train_rmse", rmse, on_step=False, on_epoch=True, prog_bar=True)
+        return loss
+        
+
+    def validation_step(self, batch, batch_idx: int) -> None:
+        images, targets = batch
+        preds = self(images)
+        loss = self.loss_fn(preds, targets)
+        targets_f = targets.to(torch.float32)
+        preds_f = preds.to(torch.float32)
+
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False)
+        self.log("val_rmse", rmse, on_step=False, on_epoch=True, prog_bar=True)
+
+        # metricようにCPUに移して溜める(epoch endでまとめて計算)
+        preds_np = torch.clamp(preds_f, min=0.0).detach().cpu().numpy()
+        targets_np = targets_f.detach().cpu().numpy()
+
+        self._val_preds.append(preds_np)
+        self._val_targets.append(targets_np)
+
+    
+    def on_validation_epoch_end(self) -> None:
+        if len(self._val_preds) == 0:
+            return
+
+        preds3 = np.concatenate(self._val_preds, axis=0)     # (N, 3)
+        targs3 = np.concatenate(self._val_targets, axis=0)   # (N, 3)
+
+        weighted_r2, r2_each = calc_metric(preds3, targs3)
+
+        self.log("val_weighted_r2", float(weighted_r2), prog_bar=True)
+        self.log("val_r2_green", float(r2_each[0]), prog_bar=False)
+        self.log("val_r2_dead",  float(r2_each[1]), prog_bar=False)
+        self.log("val_r2_clover",float(r2_each[2]), prog_bar=False)
+        self.log("val_r2_gdm",   float(r2_each[3]), prog_bar=False)
+        self.log("val_r2_total", float(r2_each[4]), prog_bar=False)
+
+        self._val_preds.clear()
+        self._val_targets.clear()
+
+    def prediction_step():
+        print("後で実装")
+        raise NotImplementedError
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(
+            self.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay
+        )
+        scheduler_cfg = None
+        name getattr(self.hparams, "scheduler_name", "name")
+        if name in ("cosine", "coslr", "cosine_annealing"):
+            t_max = int(getattr(self.hparams, "t_max", 100))
+            eta_min = float(getattr(self.hparams, "min_lr", 0.0))
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+            scheduler_cfg = {
+                "scheduler": scheduler,
+                "interval": "epoch",
+            }
+        if scheduler_cfg is None:
+            return optimizer
+        return {"optimizer": optimizer, "lr_scheduler": scheduler_cfg}
+
+    
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: Config) -> None:
     print(cfg)
