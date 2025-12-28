@@ -699,11 +699,124 @@ def main(cfg: Config) -> None:
     LOGGER.info("Start")
     log_config(cfg)
 
+    
+    # resolve paths
+    input_dir = resolve_input_dir(cfg.env.input_dir)
+    # hoge
+    train_csv = input_dir / "train.csv"
+    test_csv = input_dir / "test.csv"
+    sample_submission_csv = input_dir / "sample_submission.csv"
+
     # seed
     set_seed(cfg.exp.seed)
 
-    # paths
-    input_dir = resolve_input_dir(cfg.env.input_dir)
+    # 5070ti用 #kaggle環境ではコメントアウト
+    torch.set_float32_matmul_precision('high')
+
+    # load data
+    with trace("load.csv"):
+        train_wide = make_train_wide(train_csv)
+        train_wide["image_path"] = train_wide["image_path"].astype(str)
+        train_wide["sample_id_prefix"] = train_wide["sample_id_prefix"].astype(str)
+
+
+
+
+    with trace("make_folds"):
+        train_wide = make_folds(
+            train_wide=train_wide,
+            n_splits=cfg.exp.n_folds,
+            seed=cfg.exp.seed,
+            strat_col="State",
+            group_col="Sampling_Date",
+        )
+
+
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    LOGGER.info(f"Using device: {device}")
+
+
+    # ===== train per fold =====
+    n = len(train_wide)
+    oof_pred_full = np.zeros((n, 3), dtype=np.float32)  # (N,3) = PRED3_COLS順
+    fold_scores: dict[int, float] = {}
+    fold_to_ckpt: dict[int, str] = {}
+
+    folds_all = sorted(train_wide["fold"].unique().tolist())
+    folds_run = getattr(cfg.exp, "folds", folds_all)
+    # 安全策：範囲外があれば全foldに戻す（あなたの意図どおり事故防止）
+    if any(f not in folds_all for f in folds_run):
+        LOGGER.warning("Some requested folds are out of range; defaulting to all folds")
+        folds_run = folds_all
+
+    for fold in folds_run:
+        with trace(f"train_fold_{fold}"):
+            oof_pred_fold, fold_weighted_r2, best_ckpt = train_one_fold(
+                fold=fold,
+                train_df=train_wide,
+                input_path=input_dir,
+                cfg=cfg,
+                output_dir=output_dir,
+                exp_name=exp_name,
+            )
+
+        val_mask = (train_wide["fold"].values == fold)
+        if oof_pred_fold.shape[0] != int(val_mask.sum()):
+            raise RuntimeError(
+                f"OOF size mismatch: fold={fold}, "
+                f"oof_pred_fold={oof_pred_fold.shape[0]}, val_rows={int(val_mask.sum())}"
+            )
+
+        oof_pred_full[val_mask] = oof_pred_fold.astype(np.float32)
+        fold_scores[int(fold)] = float(fold_weighted_r2)
+        fold_to_ckpt[int(fold)] = str(best_ckpt)
+
+        LOGGER.info(f"Fold {fold} weighted_r2: {fold_weighted_r2:.6f}")
+        LOGGER.info(f"Fold {fold} best checkpoint: {best_ckpt}")
+
+
+    # OOF scoring
+    oof_true_full = train_wide[PRED3_COLS].values.astype(np.float32)  # (N,3)
+    if train_wide[PRED3_COLS].isna().any().any():
+        raise ValueError("NaN found in PRED3_COLS after pivot. Check train.csv completeness.")
+
+    oof_weighted_r2, oof_r2_each = calc_metric(oof_pred_full, oof_true_full)
+
+    LOGGER.info(f"OOF weighted_r2: {oof_weighted_r2:.6f}")
+    LOGGER.info(
+        "OOF r2_each: green=%.6f clover=%.6f dead=%.6f gdm=%.6f total=%.6f",
+        float(oof_r2_each[0]),
+        float(oof_r2_each[1]),
+        float(oof_r2_each[2]),
+        float(oof_r2_each[3]),
+        float(oof_r2_each[4]),
+    )
+    # Save OOF
+    oof_df = train_wide[["sample_id_prefix", "image_path"] + PRED3_COLS].copy()
+    oof_df[["pred_green", "pred_clover", "pred_dead"]] = oof_pred_full
+
+    oof_path = output_dir / "oof.csv"
+    oof_df.to_csv(oof_path, index=False)
+    LOGGER.info(f"Saved OOF to {oof_path}")
+
+
+    # Predict test
+    with trace("predict_test"):
+        submission = predict_test(
+            fold_to_ckpt=fold_to_ckpt,
+            input_dir=input_dir,
+            test_csv=test_csv,
+            sample_sub_csv=sample_submission_csv,
+            cfg=cfg,
+        )
+        sub_path = output_dir / "submission.csv"
+        submission.to_csv(sub_path, index=False)
+        LOGGER.info(f"Saved submission to {sub_path}")
+
+
+
+    
 
 if __name__ == "__main__":
     main()
