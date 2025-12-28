@@ -8,6 +8,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
 
 from sklearn.model_selection import KFold, GroupKFold, StratifiedGroupKFold
 from PIL import Image
@@ -15,13 +20,19 @@ from tqdm.auto import tqdm
 tqdm.pandas()
 
 import timm
+import wandb  # main関数のwandb.init用
 
 import hydra
 from hydra.core.config_store import ConfigStore
 from hydra.core.hydra_config import HydraConfig
+from omegaconf import OmegaConf
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
 
 from utils.env import EnvConfig
 from utils.logger import get_logger
+from utils.timing import trace
 
 LOGGER = None
 
@@ -31,10 +42,10 @@ LOGGER = None
 # ----Config----
 @dataclass
 class ExpConfig:
-    debug: bool = True
+    debug: bool = False
     accelerator: str = "auto"
     devices: str = "auto"
-    log_every_n_steps: int = 20
+    log_every_n_steps: int = 5
 
     # meta
     exp_name: str = "exp002_effnet-b2"
@@ -46,12 +57,15 @@ class ExpConfig:
 
     # training
     seed: int = 42
-    epochs: int = 5
+    epochs: int = 2
     batch_size: int = 32
     learning_rate: float = 1e-3
     patience: int = 10
     weight_decay: float = 0.0
     num_workers: int = 4
+    scheduler_name: str = "cosine"
+    t_max: int = 100
+    min_lr: float = 1e-6
 
     # wandb
     wandb_project: str = "csiro-biomass"

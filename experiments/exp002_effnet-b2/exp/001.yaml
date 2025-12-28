@@ -1,0 +1,5 @@
+defaults:
+  - default@_here_ # デフォルトの値を設定してから上書きする
+
+epochs: 450
+model_name: efficientnet_b2
