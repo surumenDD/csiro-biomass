@@ -252,10 +252,13 @@ def calc_metric(outputs3: np.ndarray, targets3: np.ndarray) -> Tuple[float, np.n
     return weighted_r2_score(y_true, y_pred)
 
 
+
+
+
 def create_model(model_name: str, num_classes: int= 3) -> nn.Module:
     # timmモデルを使用
     try:
-        model = timm.create_model(model_name, pretrained=True, num_classes=num_classes, in_chains=3)
+        model = timm.create_model(model_name, pretrained=True, num_classes=num_classes, in_chans=3)
     except Exception as e:
         raise ValueError(f"Failed to create timm model '{model_name}':{e}")
     return model
