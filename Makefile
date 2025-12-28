@@ -18,7 +18,7 @@ PY ?= $(UV) run python
 # Makefile がある場所をプロジェクトルートとして扱う
 PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: help new run runy list sync lock gpu-check
+.PHONY: help new run runy infer list sync lock gpu-check
 
 help:
 	@echo "Targets:"
@@ -100,7 +100,11 @@ run:
 		exit 1; \
 	fi; \
 	echo "run: $$EXP_DIR/run.py"; \
-	cd "$$EXP_DIR" && PYTHONPATH="$(PROJECT_ROOT)" $(PY) run.py $(ARGS)
+	cd "$$EXP_DIR" && \
+	PROJECT_ROOT="$(PROJECT_ROOT)" \
+	PYTHONPATH="$(PROJECT_ROOT)" \
+	$(PY) run.py $(ARGS)
+
 
 # =========================
 # 実験を実行する（exp=xxx を指定、uv）
@@ -129,7 +133,30 @@ runy:
 		YNAME="$${BASE%.yaml}"; \
 	fi; \
 	echo "run: $$EXP_DIR/run.py exp=$$YNAME"; \
-	cd "$$EXP_DIR" && PYTHONPATH="$(PROJECT_ROOT)" $(PY) run.py exp=$$YNAME $(ARGS)
+	cd "$$EXP_DIR" && \
+	PROJECT_ROOT="$(PROJECT_ROOT)" \
+	PYTHONPATH="$(PROJECT_ROOT)" \
+	$(PY) run.py exp=$$YNAME $(ARGS)
+
+# =========================
+# 推論を実行する（uv）
+# 使い方: make infer EXP=1 ARGS=""
+# =========================
+infer:
+	@if [ -z "$(EXP)" ]; then \
+		echo "ERROR: EXPを指定してください (例: make infer EXP=1)"; \
+		exit 1; \
+	fi
+	@EXP_DIR=$$(ls -d "$(EXP_ROOT)"/exp$$(printf "%03d" $(EXP))_* 2>/dev/null); \
+	if [ -z "$$EXP_DIR" ]; then \
+		echo "ERROR: exp$$(printf "%03d" $(EXP)) が見つかりません"; \
+		exit 1; \
+	fi; \
+	echo "infer: $$EXP_DIR/infer.py"; \
+	cd "$$EXP_DIR" && \
+	PROJECT_ROOT="$(PROJECT_ROOT)" \
+	PYTHONPATH="$(PROJECT_ROOT)" \
+	$(PY) infer.py $(ARGS)
 
 # =========================
 # 実験一覧
