@@ -20,5 +20,5 @@ def get_logger(file_name: str, file_dir: Path | str) -> logging.Logger:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-    logger.propagate = False
+    logger.propagate = False # 親ロガーにログを流さない
     return logger
