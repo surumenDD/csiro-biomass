@@ -376,7 +376,315 @@ class RegressionModule(pl.LightningModule):
             return optimizer
         return {"optimizer": optimizer, "lr_scheduler": scheduler_cfg}
 
+
+def train_one_fold(
+    fold: int,
+    train_df: pd.DataFrame,
+    input_path: Path,
+    cfg: Config,
+    output_dir: Path,
+    exp_name: str,
+):
+    pl.seed_everything(cfg.exp.seed + fold, workers=True)
+    train_tfms, valid_tfms = create_transforms(cfg.exp.image_size, aug=True)
+    epochs = 1 if cfg.exp.debug else cfg.exp.epochs
+
+    trn_idx = np.where(train_df["fold"].values != fold)[0]
+    val_idx = np.where(train_df["fold"].values == fold)[0]
+
+    trn_ds = ImageDataset(
+        df=train_df.iloc[trn_idx],
+        input_dir=input_path,
+        transform=train_tfms,
+        has_targets=True,
+    )
+    val_ds = ImageDataset(
+        df=train_df.iloc[val_idx],
+        input_dir=input_path,
+        transform=valid_tfms,
+        has_targets=True,
+    )
+
+    trn_loader= DataLoader(
+        trn_ds,
+        batch_size=cfg.exp.batch_size,
+        shuffle=True,
+        num_workers=cfg.exp.num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=cfg.exp.batch_size,
+        shuffle=False,
+        num_workers=cfg.exp.num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    module = RegressionModule(
+        model_name=cfg.exp.model_name,
+        learning_rate=cfg.exp.learning_rate,
+        weight_decay=cfg.exp.weight_decay,
+        scheduler_name=cfg.exp.scheduler_name,
+        t_max=cfg.exp.t_max,
+        min_lr=cfg.exp.min_lr,
+    )
+
+    accelerator = cfg.exp.accelerator
+    devices = cfg.exp.devices
     
+    ckpt_cb = ModelCheckpoint(
+        dirpath=str(output_dir),
+        filename=f"model_fold{fold}-best",
+        monitor="val_weighted_r2",
+        mode="max",
+        save_top_k=1,
+        save_weights_only=False,
+
+    )
+    lr_cb = LearningRateMonitor(logging_interval="epoch")
+
+    if cfg.exp.debug:
+        os.environ["WANDB_MODE"] = "disabled"
+    # WandBの設定を変更
+    wandb_logger = WandbLogger(
+        project=cfg.exp.wandb_project,
+        group=exp_name,               # 実験名ごとにグループ化
+        name=f"{exp_name}_fold-{fold}", # 表示名を「実験名_fold-0」にする
+        job_type="train",
+        # 各Runに設定情報を紐付ける
+        config=OmegaConf.to_container(cfg.exp, resolve=True), 
+        reinit=True
+    ) 
+
+    trainer = pl.Trainer(
+        max_epochs=epochs,
+        accelerator=accelerator,
+        devices=devices,
+        logger=wandb_logger,
+        callbacks=[ckpt_cb, lr_cb],
+        enable_checkpointing=True,
+        deterministic=True,
+        log_every_n_steps=cfg.exp.log_every_n_steps,
+    )
+
+    trainer.fit(module, train_dataloaders=trn_loader, val_dataloaders=val_loader)
+    best_path = ckpt_cb.best_model_path
+    LOGGER.info(f"Fold {fold} best checkpoint: {best_path}")
+
+    # ===== OOF（3列）を作る =====
+    best_module = RegressionModule.load_from_checkpoint(best_path)
+    pred_batches = trainer.predict(best_module, dataloaders=val_loader)
+
+    oof_pred = torch.cat(pred_batches, dim=0).detach().cpu().numpy().astype(np.float32)  # (N,3)
+
+    # 真値（3列）も同じ順で取る（ここが PRED3_COLS の順番保証）
+    oof_true = train_df.iloc[val_idx][PRED3_COLS].values.astype(np.float32)              # (N,3)
+
+    # ===== CV指標（weighted R2） =====
+    fold_weighted_r2, fold_r2_each = calc_metric(oof_pred, oof_true)
+
+    # 参考値：3列のRMSE
+    fold_rmse = float(np.sqrt(np.mean((np.maximum(oof_pred, 0.0) - oof_true) ** 2)))
+
+    LOGGER.info(f"Fold {fold} OOF weighted_r2: {fold_weighted_r2:.6f}")
+    LOGGER.info(f"Fold {fold} OOF rmse(3): {fold_rmse:.6f}")
+
+    wandb.finish()
+
+    return oof_pred, fold_weighted_r2, best_path
+
+
+
+
+def make_folds(
+    train_wide: pd.DataFrame,
+    n_splits: int,
+    seed: int,
+    strat_col: str = "State",
+    group_col: str = "Sampling_Date",
+) -> pd.DataFrame:
+    df = train_wide.copy()
+    df["fold"] = -1
+
+    sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+    X = np.zeros(len(df))  # 使わないがAPI上必要
+    y = df[strat_col].astype(str).values
+    groups = df[group_col].astype(str).values
+
+    for fold, (_, val_idx) in enumerate(sgkf.split(X=X, y=y, groups=groups)):
+        df.loc[val_idx, "fold"] = fold
+
+    return df
+
+
+def _score_split_balance(
+    df_with_fold: pd.DataFrame,
+    strat_col: str = "State",
+    pred3_cols: list[str] = None,
+) -> float:
+    # 小さいほど良い（0が理想）
+    n = len(df_with_fold)
+    fold_counts = df_with_fold["fold"].value_counts().sort_index()
+    size_ratio = fold_counts.max() / max(1, fold_counts.min())  # 1が理想
+
+    # State分布のズレ（L1距離の平均）
+    overall = df_with_fold[strat_col].value_counts(normalize=True)
+    l1_sum = 0.0
+    for f in sorted(df_with_fold["fold"].unique()):
+        dist = df_with_fold.loc[df_with_fold["fold"] == f, strat_col].value_counts(normalize=True)
+        dist = dist.reindex(overall.index, fill_value=0.0)
+        l1_sum += float(np.abs(dist.values - overall.values).sum())
+    state_l1 = l1_sum / max(1, df_with_fold["fold"].nunique())
+
+    # ターゲット平均のズレ（任意）
+    target_pen = 0.0
+    if pred3_cols is not None and all(c in df_with_fold.columns for c in pred3_cols):
+        global_mean = df_with_fold[pred3_cols].mean()
+        per = df_with_fold.groupby("fold")[pred3_cols].mean()
+        target_pen = float(np.abs(per - global_mean).mean().mean())  # 小さいほど良い
+
+    # 合成（重みは好みで調整）
+    score = (size_ratio - 1.0) * 1.0 + state_l1 * 2.0 + target_pen * 1.0
+    return score
+
+
+def make_folds_with_seed_search(
+    train_wide: pd.DataFrame,
+    n_splits: int,
+    seed_candidates: list[int],
+    strat_col: str = "State",
+    group_col: str = "Sampling_Date",
+    pred3_cols: list[str] = None,
+) -> tuple[pd.DataFrame, int, pd.DataFrame]:
+    best_seed = None
+    best_df = None
+    best_score = None
+    rows = []
+
+    for seed in seed_candidates:
+        df = make_folds(
+            train_wide=train_wide,
+            n_splits=n_splits,
+            seed=seed,
+            strat_col=strat_col,
+            group_col=group_col,
+        )
+        score = _score_split_balance(df, strat_col=strat_col, pred3_cols=pred3_cols)
+        rows.append({"seed": seed, "score": score})
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_seed = seed
+            best_df = df
+
+    score_df = pd.DataFrame(rows).sort_values("score", ascending=True).reset_index(drop=True)
+    return best_df, best_seed, score_df
+
+
+@torch.no_grad()
+def predict_test(
+    fold_to_ckpt: dict[int, str],   # fold -> ckpt path
+    input_dir: Path,
+    test_csv: Path,
+    sample_sub_csv: Path,
+    cfg: Config,
+) -> pd.DataFrame:
+    # 1) test を (画像1枚=1行) と (sample_id単位のlong) に分ける
+    test_img, test_long = make_test_tables(test_csv)
+
+    # 2) 推論用 transform / dataset / loader
+    _, valid_tfms = create_transforms(cfg.exp.image_size, aug=False)
+    test_ds = ImageDataset(
+        df=test_img,
+        input_dir=input_dir,
+        transform=valid_tfms,
+        has_targets=False,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=cfg.exp.batch_size,
+        shuffle=False,
+        num_workers=cfg.exp.num_workers,
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    # 3) fold 平均で pred3 (N,3) を作る
+    pred_sum = None
+    n_folds = 0
+
+    # 重要：foldの順は固定（再現性・デバッグ性のため）
+    for fold in sorted(fold_to_ckpt.keys()):
+        ckpt_path = fold_to_ckpt[fold]
+
+        module = RegressionModule.load_from_checkpoint(ckpt_path)
+        module.eval()
+
+        trainer = pl.Trainer(
+            accelerator=cfg.exp.accelerator,
+            devices=cfg.exp.devices,   # "auto"
+            logger=False,
+            enable_checkpointing=False,
+        )
+
+
+        pred_batches = trainer.predict(module, dataloaders=test_loader)
+        pred3 = torch.cat(pred_batches, dim=0).detach().cpu().numpy().astype(np.float32)  # (N,3)
+
+        pred_sum = pred3 if pred_sum is None else (pred_sum + pred3)
+        n_folds += 1
+
+    pred3 = pred_sum / max(1, n_folds)  # (N,3) = [Green, Clover, Dead]
+
+    # 4) 3 -> 5 復元（A案：足し算）
+    pred_green  = pred3[:, 0]
+    pred_clover = pred3[:, 1]
+    pred_dead   = pred3[:, 2]
+    pred_gdm    = pred_green + pred_clover
+    pred_total  = pred_green + pred_clover + pred_dead
+
+    pred_wide = test_img.copy()
+    pred_wide["Dry_Green_g"]  = pred_green
+    pred_wide["Dry_Clover_g"] = pred_clover
+    pred_wide["Dry_Dead_g"]   = pred_dead
+    pred_wide["GDM_g"]        = pred_gdm
+    pred_wide["Dry_Total_g"]  = pred_total
+
+    # 5) sample_submission の行順を基準に target を埋める
+    sub = pd.read_csv(sample_sub_csv)  # columns: [sample_id, target]
+
+    # sample_id -> (prefix/suffix) を作る
+    sub[["sample_id_prefix", "sample_id_suffix"]] = sub["sample_id"].str.split("__", expand=True)
+
+    # prefix -> image_path を付与（test_long を使う）
+    # sample_id_prefix は同一prefixで同一image_pathの前提
+    prefix_to_img = (
+        test_long[["sample_id_prefix", "image_path"]]
+        .drop_duplicates(subset=["sample_id_prefix"])
+        .reset_index(drop=True)
+    )
+    sub = sub.merge(prefix_to_img, on="sample_id_prefix", how="left")
+
+    # image_path -> 予測5列を付与
+    sub = sub.merge(
+        pred_wide[["image_path"] + TARGET5_ORDER],
+        on="image_path",
+        how="left",
+    )
+
+    # suffix に応じて target を決める（行順は sub のまま）
+    sub["target"] = 0.0
+    for col in TARGET5_ORDER:
+        m = sub["sample_id_suffix"] == col
+        sub.loc[m, "target"] = sub.loc[m, col].astype(float)
+
+    return sub[["sample_id", "target"]]
+
+
+
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: Config) -> None:
     print(cfg)
