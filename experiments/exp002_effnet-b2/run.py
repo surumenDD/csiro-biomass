@@ -167,37 +167,56 @@ def create_transforms(image_size: int, aug: bool) -> Tuple[transforms.Compose, t
     )
     valid_tfms = transforms.Compose(base)
     return train_tfms, valid_tfms
-    
 
 
-def make_wide_train_df(train_csv: Path) -> pd.DataFrame:
-    """
-    train.csv は (sample_id, target_name, target, image_path, ...) のロング形式。
-    画像1枚に対して 5ターゲットが縦持ちなので、画像単位で横持ち(wide)に変換する。
-    """
-    train_df = pd.read_csv(train_csv)
-    train_df[["sample_id_prefix", "sample_id_suffix"]] = train_df["sample_id"].str.split("__", expand=True)
+# 学習で直接予測する3つ
+PRED3_COLS = ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g"]
 
-    cols = [
-        "sample_id_prefix",
-        "image_path",
-        "Sampling_Date",
-        "State",
-        "Species",
-        "Pre_GSHH_NDVI",
-        "Height_Ave_cm",
-    ]
-    wide = train_df.groupby(cols).apply(lambda d: d.set_index("target_name")["target"])
-    wide = wide.reset_index()
+# コンペ評価の5つ
+TARGET5_ORDER = ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g"]
+
+META_COLS = [
+    "sample_id_prefix",
+    "image_path",
+    "Sampling_Date",
+    "State",
+    "Species",
+    "Pre_GSHH_NDVI",
+    "Height_Ave_cm",
+]
+
+
+
+def make_train_wide(train_csv: Path) -> pd.DataFrame:
+    df = pd.read_csv(train_csv)
+    df[["sample_id_prefix", "sample_id_suffix"]] = df["sample_id"].str.split("__", expand=True)
+
+    wide = (
+        df.pivot_table(
+            index=META_COLS,
+            columns="target_name",
+            values="target",
+            aggfunc="first",
+        )
+        .reset_index()
+    )
     wide.columns.name = None
-
-    # 念のため型
-    for c in ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g"]:
-        if c in wide.columns:
-            wide[c] = wide[c].astype(np.float32)
     return wide
 
-###ここからしたコミットしていない
+def make_test_tables(test_csv: Path):
+    test_long = pd.read_csv(test_csv)
+    test_long[["sample_id_prefix", "sample_id_suffix"]] = test_long["sample_id"].str.split("__", expand=True)
+
+    # 画像1枚=1行（推論用）
+    test_img = (
+        test_long[["image_path", "sample_id_prefix"]]
+        .drop_duplicates(subset=["image_path"])
+        .reset_index(drop=True)
+    )
+    return test_img, test_long
+
+
+
 
 def weighted_r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, np.ndarray]:
     """
