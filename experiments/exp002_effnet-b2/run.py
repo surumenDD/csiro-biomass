@@ -218,6 +218,10 @@ def make_test_tables(test_csv: Path):
 
 
 
+
+
+
+
 def weighted_r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, np.ndarray]:
     """
     y_true, y_pred: (N, 5) = Green/Clover/Dead/GDM/Total
@@ -278,9 +282,11 @@ class RegressionModule(pl.LightningModule):
         min_lr: float = 1e-6,
     ) -> None:
         super().__init__()
-        self.cfg = cfg
+        self.save_hyperparameters()
         self.model = create_model(model_name=model_name, num_classes=3)
         self.loss_fn = nn.SmoothL1Loss()
+        self._val_preds = []
+        self._val_targets = []
 
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
