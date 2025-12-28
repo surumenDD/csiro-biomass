@@ -314,11 +314,14 @@ class RegressionModule(pl.LightningModule):
         targets_f = targets.to(torch.float32)
         preds_f = preds.to(torch.float32)
 
+        preds_clamped = torch.clamp(preds_f, min=0.0)
+        rmse = torch.sqrt(torch.mean((preds_clamped - targets_f) ** 2))
+ 
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log("val_rmse", rmse, on_step=False, on_epoch=True, prog_bar=True)
 
         # metricようにCPUに移して溜める(epoch endでまとめて計算)
-        preds_np = torch.clamp(preds_f, min=0.0).detach().cpu().numpy()
+        preds_np = preds.detach().cpu().numpy()
         targets_np = targets_f.detach().cpu().numpy()
 
         self._val_preds.append(preds_np)
@@ -334,26 +337,33 @@ class RegressionModule(pl.LightningModule):
 
         weighted_r2, r2_each = calc_metric(preds3, targs3)
 
-        self.log("val_weighted_r2", float(weighted_r2), prog_bar=True)
+        self.log("val_weighted_r2", float(weighted_r2), on_epoch=True, prog_bar=True)
         self.log("val_r2_green", float(r2_each[0]), prog_bar=False)
-        self.log("val_r2_dead",  float(r2_each[1]), prog_bar=False)
-        self.log("val_r2_clover",float(r2_each[2]), prog_bar=False)
+        self.log("val_r2_clover", float(r2_each[1]), prog_bar=False)
+        self.log("val_r2_dead",   float(r2_each[2]), prog_bar=False)
         self.log("val_r2_gdm",   float(r2_each[3]), prog_bar=False)
         self.log("val_r2_total", float(r2_each[4]), prog_bar=False)
 
         self._val_preds.clear()
         self._val_targets.clear()
 
-    def prediction_step():
-        print("後で実装")
-        raise NotImplementedError
+    def predict_step(self, batch, batch_idx: int, dataloader_idx: Optional[int]=0):
+        if isinstance(batch, (tuple, list)) and len(batch) == 2:
+            images, _ = batch
+        else:
+            images = batch
+
+        preds = self(images).to(torch.float32)
+        preds = torch.clamp(preds, min=0.0)
+        return preds
+
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(
             self.parameters(), lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay
         )
         scheduler_cfg = None
-        name getattr(self.hparams, "scheduler_name", "name")
+        name = getattr(self.hparams, "scheduler_name", "name")
         if name in ("cosine", "coslr", "cosine_annealing"):
             t_max = int(getattr(self.hparams, "t_max", 100))
             eta_min = float(getattr(self.hparams, "min_lr", 0.0))
