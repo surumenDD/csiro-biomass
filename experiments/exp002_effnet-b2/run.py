@@ -109,7 +109,7 @@ def resolve_input_dir(cfg_input_dir: str) -> Path:
     return cwd_input_dir 
 
 
-class RegressionDataset(Dataset):
+class ImageDataset(Dataset):
     def __init__(
         self,
         df: pd.DataFrame,
@@ -135,7 +135,7 @@ class RegressionDataset(Dataset):
         if not self.has_targets:
             return image
         targets = torch.tensor(
-            [row[Dry_Green_g], row["Dry_Clover_g"], row["Dry_Dead_g"]],
+            [row["Dry_Green_g"], row["Dry_Clover_g"], row["Dry_Dead_g"]],
             dtype=torch.float32,
         )
         return image, targets
