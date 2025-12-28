@@ -34,7 +34,25 @@ from utils.env import EnvConfig
 from utils.logger import get_logger
 from utils.timing import trace
 
+
 LOGGER = None
+
+# 学習で直接予測する3つ
+PRED3_COLS = ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g"]
+
+# コンペ評価の5つ
+TARGET5_ORDER = ["Dry_Green_g", "Dry_Clover_g",
+                 "Dry_Dead_g", "GDM_g", "Dry_Total_g"]
+
+META_COLS = [
+    "sample_id_prefix",
+    "image_path",
+    "Sampling_Date",
+    "State",
+    "Species",
+    "Pre_GSHH_NDVI",
+    "Height_Ave_cm",
+]
 
 # ----Utils----
 
@@ -69,13 +87,15 @@ class ExpConfig:
 
     # wandb
     wandb_project: str = "csiro-biomass"
-    wandb_entity: Optional[str] = None # 個人ならNone
+    wandb_entity: Optional[str] = None  # 個人ならNone
     wandb_mode: str = "online"
+
 
 @dataclass
 class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     exp: ExpConfig = field(default_factory=ExpConfig)
+
 
 # hydra用にdefaultを設定
 # YAMLで両者を合成する
@@ -88,12 +108,14 @@ cs.store(name="default", group="exp", node=ExpConfig)
 def log_config(cfg: Config) -> None:
     LOGGER.info("Config: %s", cfg)
 
+
 def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic =True
+    torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
 
 def resolve_input_dir(cfg_input_dir: str) -> Path:
     # Primary: from config
@@ -106,7 +128,7 @@ def resolve_input_dir(cfg_input_dir: str) -> Path:
         return workspace_dir
     # Fallback (e.g. Kaggle): current working directory input
     cwd_input_dir = Path.cwd() / "input"
-    return cwd_input_dir 
+    return cwd_input_dir
 
 
 class ImageDataset(Dataset):
@@ -145,11 +167,12 @@ def create_transforms(image_size: int, aug: bool) -> Tuple[transforms.Compose, t
     base = [
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
+                             0.229, 0.224, 0.225]),
     ]
     if not aug:
         return transforms.Compose(base), transforms.Compose(base)
-    
+
     train_tfms = transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
@@ -162,34 +185,18 @@ def create_transforms(image_size: int, aug: bool) -> Tuple[transforms.Compose, t
                 hue=0.05,
             ),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
+                                 0.229, 0.224, 0.225]),
         ]
     )
     valid_tfms = transforms.Compose(base)
     return train_tfms, valid_tfms
 
 
-# 学習で直接予測する3つ
-PRED3_COLS = ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g"]
-
-# コンペ評価の5つ
-TARGET5_ORDER = ["Dry_Green_g", "Dry_Clover_g", "Dry_Dead_g", "GDM_g", "Dry_Total_g"]
-
-META_COLS = [
-    "sample_id_prefix",
-    "image_path",
-    "Sampling_Date",
-    "State",
-    "Species",
-    "Pre_GSHH_NDVI",
-    "Height_Ave_cm",
-]
-
-
-
 def make_train_wide(train_csv: Path) -> pd.DataFrame:
     df = pd.read_csv(train_csv)
-    df[["sample_id_prefix", "sample_id_suffix"]] = df["sample_id"].str.split("__", expand=True)
+    df[["sample_id_prefix", "sample_id_suffix"]
+       ] = df["sample_id"].str.split("__", expand=True)
 
     wide = (
         df.pivot_table(
@@ -203,9 +210,11 @@ def make_train_wide(train_csv: Path) -> pd.DataFrame:
     wide.columns.name = None
     return wide
 
+
 def make_test_tables(test_csv: Path):
     test_long = pd.read_csv(test_csv)
-    test_long[["sample_id_prefix", "sample_id_suffix"]] = test_long["sample_id"].str.split("__", expand=True)
+    test_long[["sample_id_prefix", "sample_id_suffix"]
+              ] = test_long["sample_id"].str.split("__", expand=True)
 
     # 画像1枚=1行（推論用）
     test_img = (
@@ -216,18 +225,12 @@ def make_test_tables(test_csv: Path):
     return test_img, test_long
 
 
-
-
-
-
-
-
 def weighted_r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, np.ndarray]:
     """
     y_true, y_pred: (N, 5) = Green/Clover/Dead/GDM/Total
     """
     weights = np.array([0.1, 0.1, 0.1, 0.2, 0.5], dtype=np.float64)
-    r2_scores = [] # 各ターゲットのR^2を入れるリスト
+    r2_scores = []  # 各ターゲットのR^2を入れるリスト
     for i in range(5):
         y_t = y_true[:, i]
         y_p = y_pred[:, i]
@@ -237,7 +240,8 @@ def weighted_r2_score(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, np
         r2_scores.append(r2)
     r2_scores = np.array(r2_scores)
     weighted_r2 = np.sum(r2_scores * weights) / np.sum(weights)
-    return weighted_r2, r2_scores   
+    return weighted_r2, r2_scores
+
 
 def calc_metric(outputs3: np.ndarray, targets3: np.ndarray) -> Tuple[float, np.ndarray]:
     """
@@ -245,8 +249,8 @@ def calc_metric(outputs3: np.ndarray, targets3: np.ndarray) -> Tuple[float, np.n
     """
     y_true = np.column_stack([
         targets3,
-        targets3[:, :2].sum(axis=1), # GDM_g
-        targets3.sum(axis=1), # Dry_Total_g
+        targets3[:, :2].sum(axis=1),  # GDM_g
+        targets3.sum(axis=1),  # Dry_Total_g
     ])
     y_pred = np.column_stack([
         outputs3,
@@ -256,20 +260,15 @@ def calc_metric(outputs3: np.ndarray, targets3: np.ndarray) -> Tuple[float, np.n
     return weighted_r2_score(y_true, y_pred)
 
 
-
-
-
-def create_model(model_name: str, num_classes: int= 3) -> nn.Module:
+def create_model(model_name: str, num_classes: int = 3) -> nn.Module:
     # timmモデルを使用
     try:
-        model = timm.create_model(model_name, pretrained=True, num_classes=num_classes, in_chans=3)
+        model = timm.create_model(
+            model_name, pretrained=True, num_classes=num_classes, in_chans=3)
     except Exception as e:
         raise ValueError(f"Failed to create timm model '{model_name}':{e}")
     return model
-    
 
-
-    
 
 class RegressionModule(pl.LightningModule):
     def __init__(
@@ -288,7 +287,6 @@ class RegressionModule(pl.LightningModule):
         self._val_preds = []
         self._val_targets = []
 
-    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
 
@@ -302,10 +300,11 @@ class RegressionModule(pl.LightningModule):
         preds_clamped = torch.clamp(preds_f, min=0.0)
         rmse = torch.sqrt(torch.mean((preds_clamped - targets_f) ** 2))
         # log
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log("train_rmse", rmse, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_step=False,
+                 on_epoch=True, prog_bar=False)
+        self.log("train_rmse", rmse, on_step=False,
+                 on_epoch=True, prog_bar=True)
         return loss
-        
 
     def validation_step(self, batch, batch_idx: int) -> None:
         images, targets = batch
@@ -316,8 +315,9 @@ class RegressionModule(pl.LightningModule):
 
         preds_clamped = torch.clamp(preds_f, min=0.0)
         rmse = torch.sqrt(torch.mean((preds_clamped - targets_f) ** 2))
- 
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False)
+
+        self.log("val_loss", loss, on_step=False,
+                 on_epoch=True, prog_bar=False)
         self.log("val_rmse", rmse, on_step=False, on_epoch=True, prog_bar=True)
 
         # metricようにCPUに移して溜める(epoch endでまとめて計算)
@@ -327,7 +327,6 @@ class RegressionModule(pl.LightningModule):
         self._val_preds.append(preds_np)
         self._val_targets.append(targets_np)
 
-    
     def on_validation_epoch_end(self) -> None:
         if len(self._val_preds) == 0:
             return
@@ -337,7 +336,8 @@ class RegressionModule(pl.LightningModule):
 
         weighted_r2, r2_each = calc_metric(preds3, targs3)
 
-        self.log("val_weighted_r2", float(weighted_r2), on_epoch=True, prog_bar=True)
+        self.log("val_weighted_r2", float(weighted_r2),
+                 on_epoch=True, prog_bar=True)
         self.log("val_r2_green", float(r2_each[0]), prog_bar=False)
         self.log("val_r2_clover", float(r2_each[1]), prog_bar=False)
         self.log("val_r2_dead",   float(r2_each[2]), prog_bar=False)
@@ -347,7 +347,7 @@ class RegressionModule(pl.LightningModule):
         self._val_preds.clear()
         self._val_targets.clear()
 
-    def predict_step(self, batch, batch_idx: int, dataloader_idx: Optional[int]=0):
+    def predict_step(self, batch, batch_idx: int, dataloader_idx: Optional[int] = 0):
         if isinstance(batch, (tuple, list)) and len(batch) == 2:
             images, _ = batch
         else:
@@ -356,7 +356,6 @@ class RegressionModule(pl.LightningModule):
         preds = self(images).to(torch.float32)
         preds = torch.clamp(preds, min=0.0)
         return preds
-
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(
@@ -367,7 +366,8 @@ class RegressionModule(pl.LightningModule):
         if name in ("cosine", "coslr", "cosine_annealing"):
             t_max = int(getattr(self.hparams, "t_max", 100))
             eta_min = float(getattr(self.hparams, "min_lr", 0.0))
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=t_max, eta_min=eta_min)
             scheduler_cfg = {
                 "scheduler": scheduler,
                 "interval": "epoch",
@@ -405,7 +405,7 @@ def train_one_fold(
         has_targets=True,
     )
 
-    trn_loader= DataLoader(
+    trn_loader = DataLoader(
         trn_ds,
         batch_size=cfg.exp.batch_size,
         shuffle=True,
@@ -433,7 +433,7 @@ def train_one_fold(
 
     accelerator = cfg.exp.accelerator
     devices = cfg.exp.devices
-    
+
     ckpt_cb = ModelCheckpoint(
         dirpath=str(output_dir),
         filename=f"model_fold{fold}-best",
@@ -451,12 +451,12 @@ def train_one_fold(
     wandb_logger = WandbLogger(
         project=cfg.exp.wandb_project,
         group=exp_name,               # 実験名ごとにグループ化
-        name=f"{exp_name}_fold-{fold}", # 表示名を「実験名_fold-0」にする
+        name=f"{exp_name}_fold-{fold}",  # 表示名を「実験名_fold-0」にする
         job_type="train",
         # 各Runに設定情報を紐付ける
-        config=OmegaConf.to_container(cfg.exp, resolve=True), 
+        config=OmegaConf.to_container(cfg.exp, resolve=True),
         reinit=True
-    ) 
+    )
 
     trainer = pl.Trainer(
         max_epochs=epochs,
@@ -469,7 +469,8 @@ def train_one_fold(
         log_every_n_steps=cfg.exp.log_every_n_steps,
     )
 
-    trainer.fit(module, train_dataloaders=trn_loader, val_dataloaders=val_loader)
+    trainer.fit(module, train_dataloaders=trn_loader,
+                val_dataloaders=val_loader)
     best_path = ckpt_cb.best_model_path
     LOGGER.info(f"Fold {fold} best checkpoint: {best_path}")
 
@@ -477,16 +478,19 @@ def train_one_fold(
     best_module = RegressionModule.load_from_checkpoint(best_path)
     pred_batches = trainer.predict(best_module, dataloaders=val_loader)
 
-    oof_pred = torch.cat(pred_batches, dim=0).detach().cpu().numpy().astype(np.float32)  # (N,3)
+    oof_pred = torch.cat(pred_batches, dim=0).detach(
+    ).cpu().numpy().astype(np.float32)  # (N,3)
 
     # 真値（3列）も同じ順で取る（ここが PRED3_COLS の順番保証）
-    oof_true = train_df.iloc[val_idx][PRED3_COLS].values.astype(np.float32)              # (N,3)
+    oof_true = train_df.iloc[val_idx][PRED3_COLS].values.astype(
+        np.float32)              # (N,3)
 
     # ===== CV指標（weighted R2） =====
     fold_weighted_r2, fold_r2_each = calc_metric(oof_pred, oof_true)
 
     # 参考値：3列のRMSE
-    fold_rmse = float(np.sqrt(np.mean((np.maximum(oof_pred, 0.0) - oof_true) ** 2)))
+    fold_rmse = float(
+        np.sqrt(np.mean((np.maximum(oof_pred, 0.0) - oof_true) ** 2)))
 
     LOGGER.info(f"Fold {fold} OOF weighted_r2: {fold_weighted_r2:.6f}")
     LOGGER.info(f"Fold {fold} OOF rmse(3): {fold_rmse:.6f}")
@@ -494,8 +498,6 @@ def train_one_fold(
     wandb.finish()
 
     return oof_pred, fold_weighted_r2, best_path
-
-
 
 
 def make_folds(
@@ -508,7 +510,8 @@ def make_folds(
     df = train_wide.copy()
     df["fold"] = -1
 
-    sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    sgkf = StratifiedGroupKFold(
+        n_splits=n_splits, shuffle=True, random_state=seed)
 
     X = np.zeros(len(df))  # 使わないがAPI上必要
     y = df[strat_col].astype(str).values
@@ -534,7 +537,8 @@ def _score_split_balance(
     overall = df_with_fold[strat_col].value_counts(normalize=True)
     l1_sum = 0.0
     for f in sorted(df_with_fold["fold"].unique()):
-        dist = df_with_fold.loc[df_with_fold["fold"] == f, strat_col].value_counts(normalize=True)
+        dist = df_with_fold.loc[df_with_fold["fold"] ==
+                                f, strat_col].value_counts(normalize=True)
         dist = dist.reindex(overall.index, fill_value=0.0)
         l1_sum += float(np.abs(dist.values - overall.values).sum())
     state_l1 = l1_sum / max(1, df_with_fold["fold"].nunique())
@@ -572,7 +576,8 @@ def make_folds_with_seed_search(
             strat_col=strat_col,
             group_col=group_col,
         )
-        score = _score_split_balance(df, strat_col=strat_col, pred3_cols=pred3_cols)
+        score = _score_split_balance(
+            df, strat_col=strat_col, pred3_cols=pred3_cols)
         rows.append({"seed": seed, "score": score})
 
         if best_score is None or score < best_score:
@@ -580,7 +585,8 @@ def make_folds_with_seed_search(
             best_seed = seed
             best_df = df
 
-    score_df = pd.DataFrame(rows).sort_values("score", ascending=True).reset_index(drop=True)
+    score_df = pd.DataFrame(rows).sort_values(
+        "score", ascending=True).reset_index(drop=True)
     return best_df, best_seed, score_df
 
 
@@ -630,9 +636,9 @@ def predict_test(
             enable_checkpointing=False,
         )
 
-
         pred_batches = trainer.predict(module, dataloaders=test_loader)
-        pred3 = torch.cat(pred_batches, dim=0).detach().cpu().numpy().astype(np.float32)  # (N,3)
+        pred3 = torch.cat(pred_batches, dim=0).detach(
+        ).cpu().numpy().astype(np.float32)  # (N,3)
 
         pred_sum = pred3 if pred_sum is None else (pred_sum + pred3)
         n_folds += 1
@@ -640,24 +646,25 @@ def predict_test(
     pred3 = pred_sum / max(1, n_folds)  # (N,3) = [Green, Clover, Dead]
 
     # 4) 3 -> 5 復元（A案：足し算）
-    pred_green  = pred3[:, 0]
+    pred_green = pred3[:, 0]
     pred_clover = pred3[:, 1]
-    pred_dead   = pred3[:, 2]
-    pred_gdm    = pred_green + pred_clover
-    pred_total  = pred_green + pred_clover + pred_dead
+    pred_dead = pred3[:, 2]
+    pred_gdm = pred_green + pred_clover
+    pred_total = pred_green + pred_clover + pred_dead
 
     pred_wide = test_img.copy()
-    pred_wide["Dry_Green_g"]  = pred_green
+    pred_wide["Dry_Green_g"] = pred_green
     pred_wide["Dry_Clover_g"] = pred_clover
-    pred_wide["Dry_Dead_g"]   = pred_dead
-    pred_wide["GDM_g"]        = pred_gdm
-    pred_wide["Dry_Total_g"]  = pred_total
+    pred_wide["Dry_Dead_g"] = pred_dead
+    pred_wide["GDM_g"] = pred_gdm
+    pred_wide["Dry_Total_g"] = pred_total
 
     # 5) sample_submission の行順を基準に target を埋める
     sub = pd.read_csv(sample_sub_csv)  # columns: [sample_id, target]
 
     # sample_id -> (prefix/suffix) を作る
-    sub[["sample_id_prefix", "sample_id_suffix"]] = sub["sample_id"].str.split("__", expand=True)
+    sub[["sample_id_prefix", "sample_id_suffix"]
+        ] = sub["sample_id"].str.split("__", expand=True)
 
     # prefix -> image_path を付与（test_long を使う）
     # sample_id_prefix は同一prefixで同一image_pathの前提
@@ -684,7 +691,6 @@ def predict_test(
     return sub[["sample_id", "target"]]
 
 
-
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: Config) -> None:
     print(cfg)
@@ -699,7 +705,6 @@ def main(cfg: Config) -> None:
     LOGGER.info("Start")
     log_config(cfg)
 
-    
     # resolve paths
     input_dir = resolve_input_dir(cfg.env.input_dir)
     # hoge
@@ -717,10 +722,8 @@ def main(cfg: Config) -> None:
     with trace("load.csv"):
         train_wide = make_train_wide(train_csv)
         train_wide["image_path"] = train_wide["image_path"].astype(str)
-        train_wide["sample_id_prefix"] = train_wide["sample_id_prefix"].astype(str)
-
-
-
+        train_wide["sample_id_prefix"] = train_wide["sample_id_prefix"].astype(
+            str)
 
     with trace("make_folds"):
         train_wide = make_folds(
@@ -731,11 +734,8 @@ def main(cfg: Config) -> None:
             group_col="Sampling_Date",
         )
 
-
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     LOGGER.info(f"Using device: {device}")
-
 
     # ===== train per fold =====
     n = len(train_wide)
@@ -747,7 +747,8 @@ def main(cfg: Config) -> None:
     folds_run = getattr(cfg.exp, "folds", folds_all)
     # 安全策：範囲外があれば全foldに戻す（あなたの意図どおり事故防止）
     if any(f not in folds_all for f in folds_run):
-        LOGGER.warning("Some requested folds are out of range; defaulting to all folds")
+        LOGGER.warning(
+            "Some requested folds are out of range; defaulting to all folds")
         folds_run = folds_all
 
     for fold in folds_run:
@@ -775,11 +776,11 @@ def main(cfg: Config) -> None:
         LOGGER.info(f"Fold {fold} weighted_r2: {fold_weighted_r2:.6f}")
         LOGGER.info(f"Fold {fold} best checkpoint: {best_ckpt}")
 
-
     # OOF scoring
     oof_true_full = train_wide[PRED3_COLS].values.astype(np.float32)  # (N,3)
     if train_wide[PRED3_COLS].isna().any().any():
-        raise ValueError("NaN found in PRED3_COLS after pivot. Check train.csv completeness.")
+        raise ValueError(
+            "NaN found in PRED3_COLS after pivot. Check train.csv completeness.")
 
     oof_weighted_r2, oof_r2_each = calc_metric(oof_pred_full, oof_true_full)
 
@@ -800,7 +801,6 @@ def main(cfg: Config) -> None:
     oof_df.to_csv(oof_path, index=False)
     LOGGER.info(f"Saved OOF to {oof_path}")
 
-
     # Predict test
     with trace("predict_test"):
         submission = predict_test(
@@ -814,9 +814,6 @@ def main(cfg: Config) -> None:
         submission.to_csv(sub_path, index=False)
         LOGGER.info(f"Saved submission to {sub_path}")
 
-
-
-    
 
 if __name__ == "__main__":
     main()
