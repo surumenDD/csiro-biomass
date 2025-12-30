@@ -1,0 +1,8 @@
+defaults:
+  - default@_here_ # デフォルトの値を設定してから上書きする
+
+epochs: 100
+n_folds: 4
+model_name: efficientnet_b2
+seed: 140
+
