@@ -1,0 +1,7 @@
+defaults:
+  - default@_here_ # デフォルトの値を設定してから上書きする
+
+epochs: 100
+model_name: tf_efficientnetv2_s
+seed: 140
+

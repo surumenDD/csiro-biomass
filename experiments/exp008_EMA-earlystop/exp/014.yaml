@@ -5,8 +5,11 @@ epochs: 250
 t_max: 250
 scheduler_name: "plateau"
 model_name: efficientnet_b2
-seed: 15105
-n_folds: 5
+seed: 2248
+n_folds: 3
 ema_decay: 0.99
-ema_warmup_steps: 25
+ema_warmup_steps: 20
+
+plateau_factor: 0.5
+plateau_patience: 5
 # stratified_"group"_kfoldを使用

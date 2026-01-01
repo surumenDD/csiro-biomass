@@ -1,12 +1,10 @@
 defaults:
   - default@_here_ # デフォルトの値を設定してから上書きする
 
-epochs: 250
-t_max: 250
-scheduler_name: "plateau"
+epochs: 400
+t_max: 400
 model_name: efficientnet_b2
-seed: 15105
+seed: 111
 n_folds: 5
 ema_decay: 0.99
 ema_warmup_steps: 25
-# stratified_"group"_kfoldを使用
