@@ -3,6 +3,8 @@
 /.ipython
 /input
 /output
+/artifacts
+/notebook
 /wandb
 /.netrc
 /prompt

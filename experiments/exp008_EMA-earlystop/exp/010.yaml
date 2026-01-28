@@ -1,0 +1,11 @@
+defaults:
+  - default@_here_ # デフォルトの値を設定してから上書きする
+
+epochs: 250
+t_max: 250
+scheduler_name: "plateau"
+model_name: efficientnet_b2
+seed: 466
+n_folds: 5
+ema_decay: 0.95
+ema_warmup_steps: 25

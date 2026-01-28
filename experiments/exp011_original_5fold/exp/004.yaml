@@ -1,0 +1,13 @@
+defaults:
+  - default@_here_ # デフォルトの値を設定してから上書きする
+
+# ver"3"の5foldを使用
+epochs: 30 #100
+t_max: 100
+scheduler_name: "cosine"
+model_name: efficientnet_b2
+seed: 111
+n_folds: 5
+ema_decay: 0.95
+ema_warmup_steps: 500 #500
+patience: 20
